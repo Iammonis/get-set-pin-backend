@@ -1,0 +1,131 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum PinStatus {
+  scheduled
+  posted
+  failed
+  cancelled
+}
+
+enum PlanType {
+  free
+  starter
+  pro
+  business
+}
+
+enum MediaType {
+  image
+  video
+}
+
+enum RichPinType {
+  recipe
+  article
+  product
+}
+
+enum ProductAvailability {
+  in_stock
+  out_of_stock
+  preorder
+}
+
+model User {
+  id                String             @id @default(uuid())
+  email             String             @unique
+  password          String
+  resetToken        String?            @unique
+  deactivatedAt     DateTime? // Optional field for deactivation time
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  pinterestAccounts PinterestAccount[]
+  pins              Pin[]
+  subscriptions     Subscription?
+  boards            Board[]
+}
+
+model PinterestAccount {
+  id           String   @id @default(uuid())
+  userId       String
+  pinterestId  String   @unique // Pinterest Account ID should be unique
+  accessToken  String
+  refreshToken String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt // Automatically updated when modified
+  deletedAt    DateTime? // ✅ Added for soft delete
+
+  user User  @relation(fields: [userId], references: [id])
+  pins Pin[]
+
+  @@index([pinterestId]) // Add index for faster lookups
+  @@index([deletedAt]) // Optimize soft delete queries
+}
+
+model Pin {
+  id                 String       @id @default(uuid())
+  userId             String
+  pinterestAccountId String
+  boardId            String
+  title              String
+  imageUrl           String?
+  videoUrl           String? // For storing the video URL
+  mediaType          MediaType    @default(image) // Can be 'image' or 'video'
+  richPinType        RichPinType? // Can be 'recipe', 'article', 'product'
+  link               String? // Optional for rich Pins (product, article, etc.)
+  description        String? // ✅ Added description field
+  price              Float? // Price for product Pins
+  availability       ProductAvailability? // ✅ Changed to ENUM based on Pinterest API
+  scheduledAt        DateTime? // Optional: Not all pins are scheduled
+  status             PinStatus    @default(scheduled)
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+  deletedAt          DateTime? // Soft delete: store when the record is deleted
+  createdBy          String // User ID of who created the pin
+  updatedBy          String // User ID of who last updated the pin
+
+  user             User             @relation(fields: [userId], references: [id])
+  pinterestAccount PinterestAccount @relation(fields: [pinterestAccountId], references: [id])
+  board            Board            @relation(fields: [boardId], references: [id])
+
+  @@index([boardId]) // Add index for faster lookups
+  @@index([pinterestAccountId]) // Index for quicker searches by account
+  @@index([deletedAt]) // Optimize soft delete queries
+}
+
+model Subscription {
+  id        String   @id @default(uuid())
+  userId    String   @unique
+  stripeId  String
+  plan      PlanType // Use enum for plan types
+  pinLimit  Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt // ✅ Added for tracking changes
+
+  user User @relation(fields: [userId], references: [id])
+}
+
+model Board {
+  id          String   @id @default(uuid())
+  userId      String
+  pinterestId String   @unique // Pinterest board unique ID
+  name        String
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  deletedAt   DateTime? // ✅ Added for soft delete
+
+  user User  @relation(fields: [userId], references: [id])
+  pins Pin[] // One-to-many relationship with Pin
+
+  @@index([pinterestId]) // Add index for faster lookups
+  @@index([deletedAt]) // Optimize soft delete queries
+}
