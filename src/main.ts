@@ -1,10 +1,17 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from '@/src/app.module';
+import cookieParser from 'cookie-parser';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule);
 
-  app.enableCors();
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+  app.use(cookieParser());
+
+  app.enableCors({
+    origin: process.env.FRONTEND_URL || 'http://localhost:1234', // or your actual frontend URL
+    credentials: true,
+  });
   app.setGlobalPrefix('api');
 
   try {

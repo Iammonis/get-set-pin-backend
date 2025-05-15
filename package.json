@@ -26,6 +26,7 @@
     "axios": "^1.8.3",
     "bcrypt": "^5.1.1",
     "bullmq": "^5.43.1",
+    "cookie-parser": "^1.4.7",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
     "prisma": "^6.5.0",

@@ -11,13 +11,23 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
   // ✅ Ensure 'jwt' is the strategy name
   constructor(configService: ConfigService) {
     super({
-      jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
+      jwtFromRequest: ExtractJwt.fromExtractors([
+        (req) => {
+          const token = req?.cookies?.['get-set-pin-token'];
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-return
+          return token;
+        },
+      ]),
       ignoreExpiration: false,
       secretOrKey: configService.get<string>('JWT_SECRET'), // ✅ Ensure JWT_SECRET is set
     });
   }
 
-  validate(payload: any) {
+  validate(payload: { userId: string; email: string }): {
+    userId: string;
+    email: string;
+  } {
+    console.log('Validating JWT payload:', payload);
     return { userId: payload.userId, email: payload.email };
   }
 }

@@ -1,6 +1,7 @@
 import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
+import qs from 'qs';
 import { PrismaService } from '@/src/prisma/prisma.service';
 import { PinterestTokenResponse } from '@/src/types/global.types';
 import { InjectQueue } from '@nestjs/bullmq';
@@ -14,24 +15,27 @@ export class PinterestService {
     @InjectQueue('pinQueue') private pinQueue: Queue,
   ) {}
 
-  getPinterestAuthUrl(): string {
+  getPinterestAuthUrl(userId: string): string {
     const clientId = this.configService.get<string>('PINTEREST_CLIENT_ID');
     const redirectUri = this.configService.get<string>(
       'PINTEREST_REDIRECT_URI',
     );
-    const scopes = 'pins:read,pins:write,boards:read,boards:write';
+    const scopes =
+      'pins:read,pins:write,boards:read,boards:write,user_accounts:read';
 
     const params = new URLSearchParams({
       client_id: clientId || '',
       redirect_uri: redirectUri || '',
       response_type: 'code',
       scope: scopes,
+      state: userId,
     });
 
     return `https://www.pinterest.com/oauth/?${params.toString()}`;
   }
 
   async checkUserPinterestAccount(userId: string): Promise<void> {
+    console.log(`Checking Pinterest account for userId: ${userId}`);
     const pinterestAccount = await this.prisma.pinterestAccount.findFirst({
       where: { userId },
     });
@@ -47,6 +51,7 @@ export class PinterestService {
   async fetchUserBoards(
     userId: string | undefined,
   ): Promise<{ id: string; name: string }[]> {
+    console.log(`fetchUserBoards called with userId: ${userId}`);
     if (!userId) {
       throw new HttpException(
         'User ID is missing. Ensure you are authenticated and sending the token.',
@@ -95,6 +100,9 @@ export class PinterestService {
     price?: number,
     availability?: 'in_stock' | 'out_of_stock' | 'preorder',
   ): Promise<{ id: string }> {
+    console.log(
+      `createPin called with userId: ${userId}, boardId: ${boardId}, title: ${title}`,
+    );
     await this.checkUserPinterestAccount(userId); // New validation method
 
     const pinterestAccount = await this.prisma.pinterestAccount.findFirst({
@@ -127,6 +135,8 @@ export class PinterestService {
         },
       );
 
+      console.log('Pinterest createPin response:', response.data);
+
       if (!response.data || !response.data.id) {
         throw new Error('Invalid response received from Pinterest API.');
       }
@@ -148,6 +158,9 @@ export class PinterestService {
   }
 
   async exchangeCodeForToken(code: string, userId: string) {
+    console.log(
+      `exchangeCodeForToken called with code: ${code}, userId: ${userId}`,
+    );
     const clientId = this.configService.get<string>('PINTEREST_CLIENT_ID', '');
     const clientSecret = this.configService.get<string>(
       'PINTEREST_CLIENT_SECRET',
@@ -163,16 +176,33 @@ export class PinterestService {
     }
 
     try {
+      const credentials = `${clientId}:${clientSecret}`;
+      const base64Credentials = Buffer.from(credentials, 'utf-8').toString(
+        'base64',
+      );
+
+      const data = qs.stringify({
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: redirectUri,
+        continuous_refresh: true,
+      });
+
+      console.log('Data to be sent:', data);
+
       const tokenResponse = await axios.post<PinterestTokenResponse>(
         'https://api.pinterest.com/v5/oauth/token',
+        data,
         {
-          client_id: clientId,
-          client_secret: clientSecret,
-          code,
-          redirect_uri: redirectUri,
-          grant_type: 'authorization_code',
+          headers: {
+            Authorization: `Basic ${base64Credentials}`,
+            'Content-Type': 'application/x-www-form-urlencoded',
+            Accept: 'application/json',
+          },
         },
       );
+
+      console.log('Token response received:', tokenResponse.data);
 
       if (!tokenResponse.data.access_token) {
         throw new Error('Failed to obtain access token from Pinterest.');
@@ -187,8 +217,11 @@ export class PinterestService {
         },
       );
 
+      console.log('Pinterest user info:', userResponse.data);
+
       const pinterestId: string = userResponse.data.id;
 
+      console.log('Upserting Pinterest account in DB...');
       await this.prisma.pinterestAccount.upsert({
         where: { pinterestId },
         update: { accessToken: access_token, refreshToken: refresh_token },
@@ -199,6 +232,7 @@ export class PinterestService {
           refreshToken: refresh_token,
         },
       });
+      console.log('Upsert complete.');
 
       return { access_token, refresh_token };
     } catch (error: unknown) {
@@ -226,6 +260,9 @@ export class PinterestService {
   }
 
   async refreshAccessToken(userId: string, pinterestId: string): Promise<void> {
+    console.log(
+      `refreshAccessToken called with userId: ${userId}, pinterestId: ${pinterestId}`,
+    );
     const pinterestAccount = await this.prisma.pinterestAccount.findUnique({
       where: { pinterestId },
     });
@@ -240,15 +277,28 @@ export class PinterestService {
     );
 
     try {
+      const credentials = `${clientId}:${clientSecret}`;
+      const base64Credentials = Buffer.from(credentials, 'utf-8').toString(
+        'base64',
+      );
+
+      const data = qs.stringify({
+        grant_type: 'refresh_token',
+        refresh_token: pinterestAccount.refreshToken,
+      });
+
       const tokenResponse = await axios.post<{
         access_token: string;
         refresh_token?: string;
-      }>('https://api.pinterest.com/v5/oauth/token', {
-        client_id: clientId,
-        client_secret: clientSecret,
-        refresh_token: pinterestAccount.refreshToken,
-        grant_type: 'refresh_token',
+      }>('https://api.pinterest.com/v5/oauth/token', data, {
+        headers: {
+          Authorization: `Basic ${base64Credentials}`,
+          'Content-Type': 'application/x-www-form-urlencoded',
+          Accept: 'application/json',
+        },
       });
+
+      console.log('Token refresh response:', tokenResponse.data);
 
       if (!tokenResponse.data.access_token) {
         throw new Error('Failed to refresh access token.');
@@ -262,6 +312,7 @@ export class PinterestService {
             tokenResponse.data.refresh_token || pinterestAccount.refreshToken,
         },
       });
+      console.log('Pinterest account tokens updated in DB.');
     } catch (error: unknown) {
       if (axios.isAxiosError(error)) {
         console.error(
@@ -293,6 +344,9 @@ export class PinterestService {
     description?: string,
     link?: string,
   ): Promise<{ id: string }> {
+    console.log(
+      `schedulePin called with userId: ${userId}, boardId: ${boardId}, title: ${title}, scheduledAt: ${scheduledAt.toString()}`,
+    );
     await this.checkUserPinterestAccount(userId); // New validation method
 
     const pinterestAccount = await this.prisma.pinterestAccount.findFirst({
@@ -326,11 +380,18 @@ export class PinterestService {
       },
     });
 
+    console.log('Scheduled pin created in DB:', pin.id);
+
     // Add job to queue
     await this.pinQueue.add(
       'postPin',
       { pinId: pin.id },
       { delay: scheduledAt.getTime() - Date.now() },
+    );
+
+    console.log(
+      'Pin job added to queue with delay:',
+      scheduledAt.getTime() - Date.now(),
     );
 
     return { id: pin.id };
@@ -341,6 +402,7 @@ export class PinterestService {
     userId: string,
     pinId: string,
   ): Promise<{ success: boolean }> {
+    console.log(`deletePin called with userId: ${userId}, pinId: ${pinId}`);
     const pin = await this.prisma.pin.findFirst({
       where: { id: pinId, userId },
     });
@@ -355,6 +417,8 @@ export class PinterestService {
       data: { deletedAt: new Date() },
     });
 
+    console.log(`Pin ${pinId} soft deleted.`);
+
     return { success: true };
   }
 
@@ -363,10 +427,15 @@ export class PinterestService {
     userId: string,
     boardId?: string,
   ): Promise<{ id: string; title: string }[]> {
+    console.log(
+      `fetchUserPins called with userId: ${userId}, boardId: ${boardId}`,
+    );
     const pins = await this.prisma.pin.findMany({
       where: { userId, boardId: boardId || undefined, deletedAt: null },
       select: { id: true, title: true },
     });
+
+    console.log(`Fetched ${pins.length} pins.`);
 
     return pins;
   }
@@ -377,6 +446,9 @@ export class PinterestService {
     pinId: string,
     updates: { title?: string; description?: string; link?: string },
   ): Promise<{ success: boolean }> {
+    console.log(
+      `updatePin called with userId: ${userId}, pinId: ${pinId}, updates: ${JSON.stringify(updates)}`,
+    );
     const pin = await this.prisma.pin.findFirst({
       where: { id: pinId, userId, deletedAt: null },
     });
@@ -390,6 +462,8 @@ export class PinterestService {
       data: { ...updates, updatedAt: new Date() },
     });
 
+    console.log(`Pin ${pinId} updated.`);
+
     return { success: true };
   }
 
@@ -398,6 +472,9 @@ export class PinterestService {
     pinId: string,
     newScheduledAt: Date,
   ): Promise<{ success: boolean }> {
+    console.log(
+      `updateScheduledPin called with userId: ${userId}, pinId: ${pinId}, newScheduledAt: ${newScheduledAt.toString()}`,
+    );
     const pin = await this.prisma.pin.findFirst({
       where: { id: pinId, userId, status: 'scheduled' },
     });
@@ -408,12 +485,14 @@ export class PinterestService {
 
     // Remove the old job from the queue
     await this.pinQueue.remove(pinId);
+    console.log(`Old pin job ${pinId} removed from queue.`);
 
     // Update the scheduled time in the database
     await this.prisma.pin.update({
       where: { id: pinId },
       data: { scheduledAt: newScheduledAt, updatedAt: new Date() },
     });
+    console.log(`Pin ${pinId} scheduledAt updated in DB.`);
 
     // Re-add the job with the new scheduled time
     await this.pinQueue.add(
@@ -421,6 +500,7 @@ export class PinterestService {
       { pinId },
       { delay: newScheduledAt.getTime() - Date.now() },
     );
+    console.log(`Pin job ${pinId} re-added to queue with new delay.`);
 
     return { success: true };
   }
@@ -429,6 +509,9 @@ export class PinterestService {
     userId: string,
     pinId: string,
   ): Promise<{ success: boolean }> {
+    console.log(
+      `cancelScheduledPin called with userId: ${userId}, pinId: ${pinId}`,
+    );
     const pin = await this.prisma.pin.findFirst({
       where: { id: pinId, userId, status: 'scheduled' },
     });
@@ -440,12 +523,14 @@ export class PinterestService {
     try {
       // Retrieve and remove the job associated with the pin
       await this.pinQueue.remove(pinId);
+      console.log(`Pin job ${pinId} removed from queue.`);
 
       // Mark the pin as canceled
       await this.prisma.pin.update({
         where: { id: pinId },
         data: { status: 'cancelled', updatedAt: new Date() },
       });
+      console.log(`Pin ${pinId} status updated to cancelled.`);
 
       return { success: true };
     } catch (error: unknown) {
@@ -460,5 +545,52 @@ export class PinterestService {
         HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }
+  }
+
+  async getUserPinterestAccounts(userId: string): Promise<
+    {
+      pinterestId: string;
+      username: string;
+      accountType: string;
+      profileImage: string;
+    }[]
+  > {
+    console.log(`Fetching all linked Pinterest accounts for userId: ${userId}`);
+    const accounts = await this.prisma.pinterestAccount.findMany({
+      where: { userId },
+    });
+
+    const results: Awaited<ReturnType<typeof this.getUserPinterestAccounts>> =
+      [];
+
+    for (const account of accounts) {
+      try {
+        const profileResponse = await axios.get<{
+          username: string;
+          account_type: string;
+          profile_image: string;
+        }>('https://api.pinterest.com/v5/user_account', {
+          headers: {
+            Authorization: `Bearer ${account.accessToken}`,
+          },
+        });
+
+        results.push({
+          pinterestId: account.pinterestId,
+          username: profileResponse.data.username,
+          accountType: profileResponse.data.account_type,
+          profileImage: profileResponse.data.profile_image,
+        });
+      } catch (error) {
+        console.error(
+          `Error fetching profile for Pinterest ID ${account.pinterestId}:`,
+          axios.isAxiosError(error)
+            ? error.response?.data || error.message
+            : error,
+        );
+      }
+    }
+
+    return results;
   }
 }

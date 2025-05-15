@@ -31,9 +31,16 @@ export class PinterestController {
     await this.pinterestService.checkUserPinterestAccount(req.user.userId);
   }
 
+  @UseGuards(JwtAuthGuard)
   @Get('auth')
-  redirectToPinterest(@Res() res: Response): void {
-    const url: string = this.pinterestService.getPinterestAuthUrl();
+  redirectToPinterest(
+    @Req() req: UserRequest,
+    @Res({ passthrough: true }) res: Response,
+  ): void {
+    console.log('Controller hit: req.user =', req.user);
+    const url: string = this.pinterestService.getPinterestAuthUrl(
+      req.user.userId,
+    );
     console.log(`Redirecting user to Pinterest OAuth: ${url}`);
     res.redirect(url);
   }
@@ -61,16 +68,17 @@ export class PinterestController {
   @Get('auth/callback')
   async handlePinterestCallback(
     @Query('code') code: string,
+    @Query('state') state: string,
     @Req() req: UserRequest,
-    @Res() res: Response,
+    @Res({ passthrough: true }) res: Response,
   ): Promise<void> {
     try {
-      await this.validateUser(req);
-      await this.pinterestService.exchangeCodeForToken(code, req.user.id);
-      console.log(
-        `User ${req.user.id} successfully authenticated with Pinterest.`,
+      const userId = state;
+      await this.pinterestService.exchangeCodeForToken(code, userId);
+      console.log(`User ${userId} successfully authenticated with Pinterest.`);
+      res.redirect(
+        `${process.env.FRONTEND_URL || 'http://localhost:1234/api'}/dashboard/settings/accounts`,
       );
-      res.redirect('/dashboard');
     } catch (error: unknown) {
       console.error('Pinterest OAuth Callback Error:', error);
       if (error instanceof HttpException) {
@@ -83,6 +91,12 @@ export class PinterestController {
         HttpStatus.BAD_REQUEST,
       );
     }
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('accounts')
+  async getAllPinterestAccounts(@Req() req: UserRequest) {
+    return this.pinterestService.getUserPinterestAccounts(req.user.userId);
   }
 
   @Post('schedule')
