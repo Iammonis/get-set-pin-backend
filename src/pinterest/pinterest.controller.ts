@@ -49,10 +49,16 @@ export class PinterestController {
   @Get('boards')
   async getUserBoards(
     @Req() req: UserRequest,
-  ): Promise<{ id: string; name: string }[]> {
+    @Query('pinterestAccountId') pinterestAccountId?: string,
+  ): Promise<
+    { pinterestAccountId: string; boards: { id: string; name: string }[] }[]
+  > {
     try {
       await this.validateUser(req);
-      return await this.pinterestService.fetchUserBoards(req.user.userId);
+      return await this.pinterestService.fetchUserBoards(
+        req.user.userId,
+        pinterestAccountId,
+      );
     } catch (error: unknown) {
       console.error('Error fetching boards:', error);
       if (error instanceof HttpException) {

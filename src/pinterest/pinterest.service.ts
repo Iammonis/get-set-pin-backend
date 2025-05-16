@@ -50,8 +50,10 @@ export class PinterestService {
 
   async fetchUserBoards(
     userId: string | undefined,
-  ): Promise<{ id: string; name: string }[]> {
-    console.log(`fetchUserBoards called with userId: ${userId}`);
+    pinterestAccountId?: string,
+  ): Promise<
+    { pinterestAccountId: string; boards: { id: string; name: string }[] }[]
+  > {
     if (!userId) {
       throw new HttpException(
         'User ID is missing. Ensure you are authenticated and sending the token.',
@@ -59,33 +61,51 @@ export class PinterestService {
       );
     }
 
-    console.log('Received userId:', userId); // Debugging log
-    await this.checkUserPinterestAccount(userId); // New validation method
+    const where = pinterestAccountId
+      ? { userId, pinterestId: pinterestAccountId }
+      : { userId };
 
-    const pinterestAccount = await this.prisma.pinterestAccount.findFirst({
-      where: { userId },
+    const pinterestAccounts = await this.prisma.pinterestAccount.findMany({
+      where,
     });
 
-    console.log('Pinterest Account Found:', pinterestAccount?.pinterestId); // Debugging log
-
-    try {
-      const response = await axios.get<{
-        items: { id: string; name: string }[];
-      }>('https://api.pinterest.com/v5/boards', {
-        headers: { Authorization: `Bearer ${pinterestAccount?.accessToken}` },
-      });
-
-      console.log('Pinterest API Response:', response.data); // Debugging log
-
-      return response.data.items;
-    } catch (error: unknown) {
-      console.error(
-        'Error fetching Pinterest boards:',
-        error instanceof Error ? error.message : JSON.stringify(error),
+    if (!pinterestAccounts.length) {
+      throw new HttpException(
+        'No Pinterest account(s) connected.',
+        HttpStatus.UNAUTHORIZED,
       );
-
-      throw new HttpException('Failed to fetch boards', HttpStatus.BAD_REQUEST);
     }
+
+    const results: Array<{
+      pinterestAccountId: string;
+      boards: { id: string; name: string }[];
+      error?: string;
+    }> = [];
+    for (const account of pinterestAccounts) {
+      try {
+        const response = await axios.get<{
+          items: { id: string; name: string }[];
+        }>('https://api.pinterest.com/v5/boards', {
+          headers: { Authorization: `Bearer ${account.accessToken}` },
+        });
+        results.push({
+          pinterestAccountId: account.pinterestId,
+          boards: response.data.items,
+        });
+      } catch (error: unknown) {
+        console.error(
+          `Error fetching boards for Pinterest account ${account.pinterestId}:`,
+          error instanceof Error ? error.message : JSON.stringify(error),
+        );
+        results.push({
+          pinterestAccountId: account.pinterestId,
+          boards: [],
+          error: 'Failed to fetch boards',
+        });
+      }
+    }
+
+    return results;
   }
 
   async createPin(
