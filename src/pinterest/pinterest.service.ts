@@ -6,6 +6,7 @@ import { PrismaService } from '@/src/prisma/prisma.service';
 import { PinterestTokenResponse } from '@/src/types/global.types';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
+import { PinStatus } from '@prisma/client';
 
 @Injectable()
 export class PinterestService {
@@ -498,6 +499,7 @@ export class PinterestService {
     userId: string,
     pinterestId?: string,
     boardId?: string,
+    status?: string,
     page = 1,
     limit = 10,
     sortBy: 'createdAt' | 'title' | 'status' = 'createdAt',
@@ -514,15 +516,15 @@ export class PinterestService {
       pinterestAccountId?: string;
     }[]
   > {
-    // Build where clause
     const where: {
       userId: string;
       deletedAt: null;
       pinterestAccountId?: string;
       boardId?: string;
+      status?: PinStatus;
     } = { userId, deletedAt: null };
+
     if (pinterestId) {
-      // Find the local pinterestAccountId for this user and pinterestId
       const pinterestAccount = await this.prisma.pinterestAccount.findFirst({
         where: { userId, pinterestId },
         select: { id: true },
@@ -537,6 +539,17 @@ export class PinterestService {
     }
     if (boardId) {
       where.boardId = boardId;
+    }
+    if (status) {
+      // Ensure status is a valid PinStatus enum value
+      if (Object.values(PinStatus).includes(status as PinStatus)) {
+        where.status = status as PinStatus;
+      } else {
+        throw new HttpException(
+          `Invalid pin status: ${status}`,
+          HttpStatus.BAD_REQUEST,
+        );
+      }
     }
 
     const pins = await this.prisma.pin.findMany({
@@ -595,9 +608,6 @@ export class PinterestService {
     pinId: string,
     newScheduledAt: Date,
   ): Promise<{ success: boolean }> {
-    console.log(
-      `updateScheduledPin called with userId: ${userId}, pinId: ${pinId}, newScheduledAt: ${newScheduledAt.toString()}`,
-    );
     const pin = await this.prisma.pin.findFirst({
       where: { id: pinId, userId, status: 'scheduled' },
     });
@@ -606,24 +616,26 @@ export class PinterestService {
       throw new HttpException('Scheduled pin not found', HttpStatus.NOT_FOUND);
     }
 
-    // Remove the old job from the queue
-    await this.pinQueue.remove(pinId);
-    console.log(`Old pin job ${pinId} removed from queue.`);
+    // Remove the old job from the queue (BullMQ)
+    const job = (await this.pinQueue.getJob(pinId)) as
+      | import('bullmq').Job
+      | null;
+    if (job) {
+      await job.remove();
+    }
 
     // Update the scheduled time in the database
     await this.prisma.pin.update({
       where: { id: pinId },
       data: { scheduledAt: newScheduledAt, updatedAt: new Date() },
     });
-    console.log(`Pin ${pinId} scheduledAt updated in DB.`);
 
     // Re-add the job with the new scheduled time
     await this.pinQueue.add(
       'postPin',
       { pinId },
-      { delay: newScheduledAt.getTime() - Date.now() },
+      { delay: newScheduledAt.getTime() - Date.now(), jobId: pinId },
     );
-    console.log(`Pin job ${pinId} re-added to queue with new delay.`);
 
     return { success: true };
   }
@@ -632,9 +644,6 @@ export class PinterestService {
     userId: string,
     pinId: string,
   ): Promise<{ success: boolean }> {
-    console.log(
-      `cancelScheduledPin called with userId: ${userId}, pinId: ${pinId}`,
-    );
     const pin = await this.prisma.pin.findFirst({
       where: { id: pinId, userId, status: 'scheduled' },
     });
@@ -643,31 +652,21 @@ export class PinterestService {
       throw new HttpException('Scheduled pin not found', HttpStatus.NOT_FOUND);
     }
 
-    try {
-      // Retrieve and remove the job associated with the pin
-      await this.pinQueue.remove(pinId);
-      console.log(`Pin job ${pinId} removed from queue.`);
-
-      // Mark the pin as canceled
-      await this.prisma.pin.update({
-        where: { id: pinId },
-        data: { status: 'cancelled', updatedAt: new Date() },
-      });
-      console.log(`Pin ${pinId} status updated to cancelled.`);
-
-      return { success: true };
-    } catch (error: unknown) {
-      console.error(
-        'Error canceling scheduled pin:',
-        error instanceof Error ? error.message : JSON.stringify(error),
-      );
-      throw new HttpException(
-        error instanceof Error
-          ? error.message
-          : 'Failed to cancel scheduled pin',
-        HttpStatus.INTERNAL_SERVER_ERROR,
-      );
+    // Remove the job from the queue (BullMQ)
+    const job = (await this.pinQueue.getJob(pinId)) as
+      | import('bullmq').Job
+      | null;
+    if (job) {
+      await job.remove();
     }
+
+    // Mark the pin as canceled
+    await this.prisma.pin.update({
+      where: { id: pinId },
+      data: { status: 'cancelled', updatedAt: new Date() },
+    });
+
+    return { success: true };
   }
 
   async getUserPinterestAccounts(userId: string): Promise<
@@ -715,5 +714,78 @@ export class PinterestService {
     }
 
     return results;
+  }
+
+  // Get details for a single pin
+  async getPinById(userId: string, pinId: string): Promise<any> {
+    const pin = await this.prisma.pin.findFirst({
+      where: { id: pinId, userId, deletedAt: null },
+      select: {
+        id: true,
+        title: true,
+        createdAt: true,
+        status: true,
+        boardId: true,
+        description: true,
+        link: true,
+        pinterestAccountId: true,
+        scheduledAt: true,
+        mediaType: true,
+        imageUrl: true,
+        videoUrl: true,
+      },
+    });
+
+    if (!pin) {
+      throw new HttpException('Pin not found', HttpStatus.NOT_FOUND);
+    }
+
+    return pin;
+  }
+
+  // Get details for a single board
+  async getBoardById(
+    userId: string,
+    boardId: string,
+    pinterestAccountId?: string,
+  ): Promise<any> {
+    // Try local DB first
+    const pinBoard = await this.prisma.board.findFirst({
+      where: { id: boardId, userId },
+    });
+
+    if (pinBoard) {
+      return pinBoard;
+    }
+
+    // Fetch from Pinterest API using the correct account
+    const pinterestAccount = await this.prisma.pinterestAccount.findFirst({
+      where: pinterestAccountId
+        ? { userId, id: pinterestAccountId }
+        : { userId },
+    });
+
+    if (!pinterestAccount) {
+      throw new HttpException(
+        'Pinterest account not found',
+        HttpStatus.NOT_FOUND,
+      );
+    }
+
+    try {
+      const response = await axios.get<any>(
+        `https://api.pinterest.com/v5/boards/${boardId}`,
+        {
+          headers: { Authorization: `Bearer ${pinterestAccount.accessToken}` },
+        },
+      );
+      return response.data;
+    } catch (error) {
+      console.error('Error fetching board from Pinterest:', error);
+      throw new HttpException(
+        'Failed to fetch board details from Pinterest',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
   }
 }
