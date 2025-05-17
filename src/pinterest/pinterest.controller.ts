@@ -173,6 +173,7 @@ export class PinterestController {
   @Get('pins')
   async getUserPins(
     @Req() req: UserRequest,
+    @Query('pinterestId') pinterestId?: string,
     @Query('boardId') boardId?: string,
     @Query('page') page = '1',
     @Query('limit') limit = '10',
@@ -187,12 +188,14 @@ export class PinterestController {
       boardId: string;
       description?: string;
       link?: string;
+      pinterestAccountId?: string;
     }[]
   > {
     try {
       await this.validateUser(req);
       return await this.pinterestService.fetchUserPins(
         req.user.userId,
+        // pinterestId,
         boardId,
         parseInt(page, 10),
         parseInt(limit, 10),
