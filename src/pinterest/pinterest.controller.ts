@@ -50,6 +50,9 @@ export class PinterestController {
   async getUserBoards(
     @Req() req: UserRequest,
     @Query('pinterestAccountId') pinterestAccountId?: string,
+    @Query('page') page = '1',
+    @Query('limit') limit = '10',
+    @Query('search') search?: string,
   ): Promise<
     { pinterestAccountId: string; boards: { id: string; name: string }[] }[]
   > {
@@ -58,6 +61,9 @@ export class PinterestController {
       return await this.pinterestService.fetchUserBoards(
         req.user.userId,
         pinterestAccountId,
+        parseInt(page, 10),
+        parseInt(limit, 10),
+        search,
       );
     } catch (error: unknown) {
       console.error('Error fetching boards:', error);
@@ -168,12 +174,30 @@ export class PinterestController {
   async getUserPins(
     @Req() req: UserRequest,
     @Query('boardId') boardId?: string,
-  ): Promise<{ id: string; title: string }[]> {
+    @Query('page') page = '1',
+    @Query('limit') limit = '10',
+    @Query('sortBy') sortBy: 'createdAt' | 'title' | 'status' = 'createdAt',
+    @Query('sortOrder') sortOrder: 'asc' | 'desc' = 'desc',
+  ): Promise<
+    {
+      id: string;
+      title: string;
+      createdAt: Date;
+      status: string;
+      boardId: string;
+      description?: string;
+      link?: string;
+    }[]
+  > {
     try {
       await this.validateUser(req);
       return await this.pinterestService.fetchUserPins(
         req.user.userId,
         boardId,
+        parseInt(page, 10),
+        parseInt(limit, 10),
+        sortBy,
+        sortOrder,
       );
     } catch (error: unknown) {
       console.error('Error fetching user pins:', error);

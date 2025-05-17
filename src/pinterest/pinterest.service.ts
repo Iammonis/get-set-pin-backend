@@ -51,8 +51,16 @@ export class PinterestService {
   async fetchUserBoards(
     userId: string | undefined,
     pinterestAccountId?: string,
+    page = 1,
+    limit = 10,
+    search?: string,
+    sortBy: 'name' | 'createdAt' | 'pinCount' = 'createdAt',
+    sortOrder: 'asc' | 'desc' = 'desc',
   ): Promise<
-    { pinterestAccountId: string; boards: { id: string; name: string }[] }[]
+    {
+      pinterestAccountId: string;
+      boards: { id: string; name: string; createdAt: Date; pinCount: number }[];
+    }[]
   > {
     if (!userId) {
       throw new HttpException(
@@ -78,19 +86,62 @@ export class PinterestService {
 
     const results: Array<{
       pinterestAccountId: string;
-      boards: { id: string; name: string }[];
+      boards: { id: string; name: string; createdAt: Date; pinCount: number }[];
       error?: string;
     }> = [];
+
     for (const account of pinterestAccounts) {
       try {
+        const url = new URL('https://api.pinterest.com/v5/boards');
+        url.searchParams.set('page_size', limit.toString());
+        url.searchParams.set('page', page.toString());
+        if (search) url.searchParams.set('query', search);
+
         const response = await axios.get<{
-          items: { id: string; name: string }[];
-        }>('https://api.pinterest.com/v5/boards', {
+          items: { id: string; name: string; created_at: string }[];
+        }>(url.toString(), {
           headers: { Authorization: `Bearer ${account.accessToken}` },
         });
+
+        // Get pin counts for all boards in this account
+        const boardIds = response.data.items.map((b) => b.id);
+        const pinCounts = await this.prisma.pin.groupBy({
+          by: ['boardId'],
+          where: {
+            boardId: { in: boardIds },
+            userId,
+            deletedAt: null,
+          },
+          _count: { id: true },
+        });
+
+        const pinCountMap = Object.fromEntries(
+          pinCounts.map((pc) => [pc.boardId, pc._count.id]),
+        );
+
+        let boards = response.data.items.map((b) => ({
+          id: b.id,
+          name: b.name,
+          createdAt: new Date(b.created_at),
+          pinCount: pinCountMap[b.id] || 0,
+        }));
+
+        // Sorting
+        boards = boards.sort((a, b) => {
+          let cmp = 0;
+          if (sortBy === 'name') {
+            cmp = a.name.localeCompare(b.name);
+          } else if (sortBy === 'createdAt') {
+            cmp = a.createdAt.getTime() - b.createdAt.getTime();
+          } else if (sortBy === 'pinCount') {
+            cmp = a.pinCount - b.pinCount;
+          }
+          return sortOrder === 'desc' ? -cmp : cmp;
+        });
+
         results.push({
           pinterestAccountId: account.pinterestId,
-          boards: response.data.items,
+          boards,
         });
       } catch (error: unknown) {
         console.error(
@@ -446,18 +497,46 @@ export class PinterestService {
   async fetchUserPins(
     userId: string,
     boardId?: string,
-  ): Promise<{ id: string; title: string }[]> {
+    page = 1,
+    limit = 10,
+    sortBy: 'createdAt' | 'title' | 'status' = 'createdAt',
+    sortOrder: 'asc' | 'desc' = 'desc',
+  ): Promise<
+    {
+      id: string;
+      title: string;
+      createdAt: Date;
+      status: string;
+      boardId: string;
+      description?: string;
+      link?: string;
+    }[]
+  > {
     console.log(
-      `fetchUserPins called with userId: ${userId}, boardId: ${boardId}`,
+      `fetchUserPins called with userId: ${userId}, boardId: ${boardId}, page: ${page}, limit: ${limit}, sortBy: ${sortBy}, sortOrder: ${sortOrder}`,
     );
     const pins = await this.prisma.pin.findMany({
       where: { userId, boardId: boardId || undefined, deletedAt: null },
-      select: { id: true, title: true },
+      orderBy: { [sortBy]: sortOrder },
+      skip: (page - 1) * limit,
+      take: limit,
+      select: {
+        id: true,
+        title: true,
+        createdAt: true,
+        status: true,
+        boardId: true,
+        description: true,
+        link: true,
+      },
     });
 
     console.log(`Fetched ${pins.length} pins.`);
-
-    return pins;
+    return pins.map((pin) => ({
+      ...pin,
+      description: pin.description ?? undefined,
+      link: pin.link ?? undefined,
+    }));
   }
 
   // 📌 Update Pin Status & Metadata
