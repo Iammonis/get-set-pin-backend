@@ -195,7 +195,7 @@ export class PinterestController {
       await this.validateUser(req);
       return await this.pinterestService.fetchUserPins(
         req.user.userId,
-        // pinterestId,
+        pinterestId,
         boardId,
         parseInt(page, 10),
         parseInt(limit, 10),

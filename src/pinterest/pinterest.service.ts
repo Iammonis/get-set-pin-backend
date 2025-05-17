@@ -496,6 +496,7 @@ export class PinterestService {
   // 📌 Fetch User Pins
   async fetchUserPins(
     userId: string,
+    pinterestId?: string,
     boardId?: string,
     page = 1,
     limit = 10,
@@ -510,13 +511,36 @@ export class PinterestService {
       boardId: string;
       description?: string;
       link?: string;
+      pinterestAccountId?: string;
     }[]
   > {
-    console.log(
-      `fetchUserPins called with userId: ${userId}, boardId: ${boardId}, page: ${page}, limit: ${limit}, sortBy: ${sortBy}, sortOrder: ${sortOrder}`,
-    );
+    // Build where clause
+    const where: {
+      userId: string;
+      deletedAt: null;
+      pinterestAccountId?: string;
+      boardId?: string;
+    } = { userId, deletedAt: null };
+    if (pinterestId) {
+      // Find the local pinterestAccountId for this user and pinterestId
+      const pinterestAccount = await this.prisma.pinterestAccount.findFirst({
+        where: { userId, pinterestId },
+        select: { id: true },
+      });
+      if (!pinterestAccount) {
+        throw new HttpException(
+          'Pinterest account not found',
+          HttpStatus.NOT_FOUND,
+        );
+      }
+      where.pinterestAccountId = pinterestAccount.id;
+    }
+    if (boardId) {
+      where.boardId = boardId;
+    }
+
     const pins = await this.prisma.pin.findMany({
-      where: { userId, boardId: boardId || undefined, deletedAt: null },
+      where,
       orderBy: { [sortBy]: sortOrder },
       skip: (page - 1) * limit,
       take: limit,
@@ -528,10 +552,10 @@ export class PinterestService {
         boardId: true,
         description: true,
         link: true,
+        pinterestAccountId: true,
       },
     });
 
-    console.log(`Fetched ${pins.length} pins.`);
     return pins.map((pin) => ({
       ...pin,
       description: pin.description ?? undefined,
